@@ -9,6 +9,11 @@ const DISCORD_CLIENT_SECRET = process.env.DISCORD_CLIENT_SECRET;
 const GREEN_API_BASE_URL = process.env.GREEN_API_BASE_URL;
 const GREEN_API_TOKEN = process.env.GREEN_API_TOKEN;
 
+// Shown on the page. Tells a tester on mobile -- where there are no
+// devtools -- whether the HTML they're looking at came from the current
+// container or a cache holding something older.
+const SERVER_BOOT = new Date().toISOString();
+
 const server = http.createServer((req, res) => {
   // Discord's proxy appends launch params to the URL (e.g.
   // "/?instance_id=...&channel_id=...&guild_id=...&frame_id=...&platform=desktop"),
@@ -48,7 +53,9 @@ function serveIndex(res) {
       res.end('Server error');
       return;
     }
-    const rendered = html.replace('%%DISCORD_CLIENT_ID%%', DISCORD_CLIENT_ID || '');
+    const rendered = html
+      .replace('%%DISCORD_CLIENT_ID%%', DISCORD_CLIENT_ID || '')
+      .replace('%%SERVER_BOOT%%', SERVER_BOOT);
     // This is a POC iterating fast, not a static site -- an intermediate
     // cache (Discord's own Activity proxy included) holding onto a stale
     // index.html/bundle.js after a redeploy is a worse failure mode than

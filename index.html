@@ -2,13 +2,48 @@
 <html>
   <head>
     <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
     <title>Activity POC</title>
+    <style>
+      /* Discord's Activity iframe is dark and our text was defaulting to
+         black, which made everything but the big bold h1 effectively
+         invisible. Explicit colors, and top padding so the heading isn't
+         under Discord's own floating header. */
+      body {
+        margin: 0;
+        padding: 56px 16px 24px;
+        background: #1e1f22;
+        color: #f2f3f5;
+        font-family: system-ui, -apple-system, sans-serif;
+      }
+      h1 {
+        font-size: 20px;
+        margin: 0 0 12px;
+      }
+      #party {
+        margin: 0 0 20px;
+        padding-left: 22px;
+        font-size: 16px;
+      }
+      #log {
+        font-size: 12px;
+        line-height: 1.6;
+        color: #b5bac1;
+        white-space: pre-wrap;
+        word-break: break-word;
+      }
+      #log .err {
+        color: #ff7b72;
+      }
+    </style>
   </head>
   <body>
     <h1 id="status">Connecting to Discord...</h1>
     <ul id="party"></ul>
+    <div id="log"></div>
     <script>
       window.DISCORD_CLIENT_ID = "%%DISCORD_CLIENT_ID%%";
+      window.SERVER_BOOT = "%%SERVER_BOOT%%";
     </script>
     <script src="/bundle.js"></script>
   </body>
