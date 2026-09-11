@@ -1,6 +1,7 @@
 const http = require('http');
 const fs = require('fs');
 const path = require('path');
+const crypto = require('crypto');
 
 const PORT = process.env.PORT || 5173;
 const DISCORD_CLIENT_ID = process.env.DISCORD_CLIENT_ID;
@@ -13,6 +14,28 @@ const GREEN_API_TOKEN = process.env.GREEN_API_TOKEN;
 // devtools -- whether the HTML they're looking at came from the current
 // container or a cache holding something older.
 const SERVER_BOOT = new Date().toISOString();
+
+// index.html was updating on deploy while bundle.js stayed frozen on an
+// old build -- the page's CSS was current but its JavaScript wasn't, so
+// something between this server and the browser (Discord's own Activity
+// proxy being the obvious suspect) was still serving the copy of
+// /bundle.js it cached on the very first launch, from before the
+// no-store header existed. Cache-Control can't fix an entry a cache
+// already holds; a different URL can, because no cache has a copy of a
+// URL it has never seen. Hashing the content rather than using the boot
+// time means the URL only changes when the bundle actually changes, so
+// ordinary restarts still get to reuse a warm cache.
+const BUNDLE_VERSION = (() => {
+  try {
+    const contents = fs.readFileSync(path.join(__dirname, 'bundle.js'));
+    return crypto.createHash('sha1').update(contents).digest('hex').slice(0, 8);
+  } catch {
+    // Built at deploy time, so it is normally on disk well before the
+    // first request. If it somehow isn't, fall back to something that at
+    // least changes per container instead of a constant.
+    return Date.now().toString(36);
+  }
+})();
 
 const server = http.createServer((req, res) => {
   // Discord's proxy appends launch params to the URL (e.g.
@@ -55,7 +78,8 @@ function serveIndex(res) {
     }
     const rendered = html
       .replace('%%DISCORD_CLIENT_ID%%', DISCORD_CLIENT_ID || '')
-      .replace('%%SERVER_BOOT%%', SERVER_BOOT);
+      .replace('%%SERVER_BOOT%%', SERVER_BOOT)
+      .replace('%%BUNDLE_VERSION%%', BUNDLE_VERSION);
     // This is a POC iterating fast, not a static site -- an intermediate
     // cache (Discord's own Activity proxy included) holding onto a stale
     // index.html/bundle.js after a redeploy is a worse failure mode than

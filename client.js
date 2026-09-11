@@ -4,7 +4,7 @@ import { DiscordSDK } from '@discord/embedded-app-sdk';
 // reached the client. Printed on the page, so a stale cached bundle is
 // immediately obvious instead of being indistinguishable from a bug --
 // the Activity is tested on mobile, where there are no devtools to check.
-const BUILD_MARKER = 'party-v2';
+const BUILD_MARKER = 'party-v3';
 
 const statusEl = document.getElementById('status');
 const partyEl = document.getElementById('party');

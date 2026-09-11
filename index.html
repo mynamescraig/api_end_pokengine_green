@@ -45,6 +45,9 @@
       window.DISCORD_CLIENT_ID = "%%DISCORD_CLIENT_ID%%";
       window.SERVER_BOOT = "%%SERVER_BOOT%%";
     </script>
-    <script src="/bundle.js"></script>
+    <!-- ?v=<content hash>: see BUNDLE_VERSION in server.js -- the query
+         string is what stops a cache from serving an old build forever.
+         The router matches on pathname, so it reaches serveBundle. -->
+    <script src="/bundle.js?v=%%BUNDLE_VERSION%%"></script>
   </body>
 </html>
