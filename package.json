@@ -2,6 +2,13 @@
   "name": "discord-activity-poc",
   "version": "1.0.0",
   "scripts": {
+    "build": "esbuild client.js --bundle --outfile=bundle.js --format=iife",
     "start": "node server.js"
+  },
+  "dependencies": {
+    "@discord/embedded-app-sdk": "^2.5.0"
+  },
+  "devDependencies": {
+    "esbuild": "^0.28.2"
   }
 }
