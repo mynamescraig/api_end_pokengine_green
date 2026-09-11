@@ -8,7 +8,7 @@ const DISCORD_CLIENT_ID = process.env.DISCORD_CLIENT_ID;
 const DISCORD_CLIENT_SECRET = process.env.DISCORD_CLIENT_SECRET;
 
 const server = http.createServer((req, res) => {
-  // Discord's proxy appends launch params to the URL (e.g.
+  // aDiscord's proxy appends launch params to the URL (e.g.
   // "/?instance_id=...&channel_id=...&guild_id=...&frame_id=...&platform=desktop"),
   // so we compare against the pathname only, not the raw req.url, or every
   // request from inside Discord fails to match and falls through to 404.
