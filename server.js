@@ -49,7 +49,12 @@ function serveIndex(res) {
       return;
     }
     const rendered = html.replace('%%DISCORD_CLIENT_ID%%', DISCORD_CLIENT_ID || '');
-    res.writeHead(200, { 'Content-Type': 'text/html' });
+    // This is a POC iterating fast, not a static site -- an intermediate
+    // cache (Discord's own Activity proxy included) holding onto a stale
+    // index.html/bundle.js after a redeploy is a worse failure mode than
+    // paying for a fetch every load. no-store, not just no-cache: no-cache
+    // still permits a conditional GET that can be satisfied from cache.
+    res.writeHead(200, { 'Content-Type': 'text/html', 'Cache-Control': 'no-store' });
     res.end(rendered);
   });
 }
@@ -65,7 +70,7 @@ function serveBundle(res) {
       res.end('bundle.js missing -- did the build step run?');
       return;
     }
-    res.writeHead(200, { 'Content-Type': 'application/javascript' });
+    res.writeHead(200, { 'Content-Type': 'application/javascript', 'Cache-Control': 'no-store' });
     res.end(contents);
   });
 }
