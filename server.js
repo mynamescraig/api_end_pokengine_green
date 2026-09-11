@@ -207,11 +207,18 @@ function handlePartyLookup(req, res) {
       return;
     }
 
+    // Never trust a client-supplied Discord id -- ask Discord itself who
+    // this access_token actually belongs to. A forged/stale id in the
+    // request body would otherwise let any caller request any player's
+    // party.
+    //
+    // Each outbound call gets its own try/catch, rather than one block
+    // around the lot: a single catch-all reported "Internal server error"
+    // for two completely different failures (Discord unreachable vs the
+    // battle engine unreachable) and named neither, which is exactly what
+    // made this take three rounds of screenshots to pin down.
+    let discordId;
     try {
-      // Never trust a client-supplied Discord id -- ask Discord itself
-      // who this access_token actually belongs to. A forged/stale id in
-      // the request body would otherwise let any caller request any
-      // player's party.
       const meResponse = await fetch('https://discord.com/api/users/@me', {
         headers: { Authorization: `Bearer ${accessToken}` },
       });
@@ -220,40 +227,115 @@ function handlePartyLookup(req, res) {
         res.end(JSON.stringify({ error: 'Could not verify Discord identity.' }));
         return;
       }
-      const { id: discordId } = await meResponse.json();
+      ({ id: discordId } = await meResponse.json());
+    } catch (err) {
+      console.error('Discord identity lookup failed:', err);
+      sendJson(res, 502, {
+        error: 'Could not reach Discord to verify identity.',
+        detail: describeError(err),
+      });
+      return;
+    }
 
-      // trainer_id IS the Discord snowflake for this id -- true for a
-      // Discord-originated account, and also true after a Minecraft
-      // player links their Discord (linking repoints their party to live
-      // here, per Green's db/trainer_links.py). A player who has never
-      // linked simply has no row, and Green's own get_party already
-      // reports that as an empty party rather than an error, so nothing
-      // extra is needed here for that case.
-      const partyResponse = await fetch(`${GREEN_API_BASE_URL}/v1/trainers/${discordId}/party`, {
+    // trainer_id IS the Discord snowflake for this id -- true for a
+    // Discord-originated account, and also true after a Minecraft player
+    // links their Discord (linking repoints their party to live here, per
+    // Green's db/trainer_links.py). A player who has never linked simply
+    // has no row, and Green's own get_party already reports that as an
+    // empty party rather than an error, so nothing extra is needed here
+    // for that case.
+    const partyUrl = `${GREEN_API_BASE_URL}/v1/trainers/${discordId}/party`;
+    let partyResponse;
+    try {
+      partyResponse = await fetch(partyUrl, {
         headers: { Authorization: `Bearer ${GREEN_API_TOKEN}` },
       });
-      if (!partyResponse.ok) {
-        console.error('Green party lookup failed:', partyResponse.status, await partyResponse.text());
-        res.writeHead(502, { 'Content-Type': 'application/json' });
-        res.end(JSON.stringify({ error: 'Party lookup failed.' }));
-        return;
-      }
-      const { members } = await partyResponse.json();
-      // proper_name, not nickname -- the ask is species names, and an
-      // egg slot's proper_name already comes back as "Egg" (Green masks
-      // it at the API boundary), so no special-casing is needed here.
-      const party = (members || []).map((member) => member.proper_name);
-
-      res.writeHead(200, { 'Content-Type': 'application/json' });
-      res.end(JSON.stringify({ party }));
     } catch (err) {
-      console.error('Party lookup error:', err);
-      res.writeHead(500, { 'Content-Type': 'application/json' });
-      res.end(JSON.stringify({ error: 'Internal server error' }));
+      // Never reached the engine at all: a bad URL (a GREEN_API_BASE_URL
+      // missing its scheme is the classic one), DNS, TLS, or nothing
+      // listening.
+      console.error('Battle engine request failed:', partyUrl, err);
+      sendJson(res, 502, {
+        error: 'Could not reach the battle engine.',
+        detail: describeError(err),
+      });
+      return;
+    }
+
+    const rawBody = await partyResponse.text();
+    if (!partyResponse.ok) {
+      console.error('Battle engine rejected the party lookup:', partyResponse.status, rawBody);
+      sendJson(res, 502, {
+        error: 'The battle engine rejected the party lookup.',
+        status: partyResponse.status,
+        detail: rawBody.slice(0, 200),
+      });
+      return;
+    }
+
+    try {
+      const { members } = JSON.parse(rawBody);
+      // proper_name, not nickname -- the ask is species names, and an egg
+      // slot's proper_name already comes back as "Egg" (Green masks it at
+      // the API boundary), so no special-casing is needed here.
+      const party = (members || []).map((member) => member.proper_name);
+      sendJson(res, 200, { party });
+    } catch (err) {
+      console.error('Could not parse the battle engine response:', err, rawBody.slice(0, 200));
+      sendJson(res, 502, {
+        error: 'The battle engine returned something unreadable.',
+        detail: describeError(err),
+      });
     }
   });
 }
 
+function sendJson(res, status, body) {
+  res.writeHead(status, { 'Content-Type': 'application/json' });
+  res.end(JSON.stringify(body));
+}
+
+/**
+ * A failed fetch in Node says only "fetch failed" -- the part that
+ * actually identifies the problem (ENOTFOUND, ECONNREFUSED, a TLS
+ * complaint) hangs off err.cause, so both go in.
+ *
+ * This ends up in the response body, which is a POC-time tradeoff made
+ * deliberately: the Activity is being debugged on a phone with no
+ * devtools, and a generic "Internal server error" is what cost us
+ * several rounds of guessing. It can reveal the engine's hostname to
+ * anyone who opens the Activity, so it should become log-only before
+ * this is anything more than a proof of concept.
+ */
+function describeError(err) {
+  if (!err) {
+    return 'unknown error';
+  }
+  const cause = err.cause && err.cause.message ? ` (${err.cause.message})` : '';
+  return `${err.message || err}${cause}`;
+}
+
 server.listen(PORT, () => {
   console.log(`Listening on port ${PORT}`);
+
+  // Checked at startup rather than on the first request: a base URL
+  // without a scheme is the single likeliest way this is misconfigured,
+  // and `new URL()` throwing on it is what turns into an opaque "fetch
+  // failed" much later, on a request nobody is watching the logs for.
+  if (!GREEN_API_BASE_URL) {
+    console.warn('GREEN_API_BASE_URL is not set; /api/party cannot work.');
+    return;
+  }
+  try {
+    const parsed = new URL(GREEN_API_BASE_URL);
+    console.log(`Battle engine base URL: ${parsed.protocol}//${parsed.host}`);
+    if (GREEN_API_BASE_URL.endsWith('/')) {
+      console.warn('GREEN_API_BASE_URL ends with a slash; paths will contain "//".');
+    }
+  } catch {
+    console.error(
+      `GREEN_API_BASE_URL is not a valid URL: ${GREEN_API_BASE_URL} ` +
+        '-- it needs a scheme, e.g. https://host, not just host.'
+    );
+  }
 });
