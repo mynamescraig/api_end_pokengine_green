@@ -115,9 +115,6 @@ function handleTokenExchange(req, res) {
       });
 
       if (!tokenResponse.ok) {
-        // The response body here can include Discord's own error detail,
-        // which is fine to log server-side but never worth forwarding to
-        // the client -- it doesn't need to know why, just that it failed.
         console.error('Discord token exchange failed:', tokenResponse.status, await tokenResponse.text());
         res.writeHead(502, { 'Content-Type': 'application/json' });
         res.end(JSON.stringify({ error: 'Token exchange with Discord failed.' }));
