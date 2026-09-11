@@ -168,15 +168,26 @@
            the border. */
         border-image-slice: 16 fill;
         border-image-width: 24px;
-        /* round rather than the stretch default: stretch would smear the
-           dot-grid fill and the straight edge tiles into blur trying to
-           cover a height CSS doesn't know ahead of time (the card's
-           height depends on which Pokemon is open). round rescales to
-           fit a whole number of tiles instead of stretching a fraction of
-           one, so the pattern repeats cleanly regardless of content
-           length. */
-        border-image-repeat: round;
+        /* repeat, not round: round looked right in theory (rescale to
+           fit a whole number of tiles rather than stretch a fraction of
+           one) but round scales its whole-number fit INDEPENDENTLY on
+           each axis, and those two scale factors are essentially never
+           equal for an arbitrary card height -- the result is the same
+           square dot tile resized to a different width-scale than
+           height-scale, i.e. visibly stretched into ovals, which is
+           exactly what happened. repeat uses the tile at its native
+           (border-image-width-derived, but uniform on both axes) size
+           and simply tiles it, clipping a partial tile at the far edge
+           instead of resizing anything -- worse at the seam, but the
+           dots actually stay square everywhere else. */
+        border-image-repeat: repeat;
         image-rendering: pixelated;
+        /* The atlas's own palette, not this page's dark-mode one: the
+           fill tile this border-image now paints as the card's actual
+           background is light (#E0E8E8), and every text color below was
+           still the light-on-dark set body{} uses everywhere else on
+           this page -- fine there, invisible here. */
+        color: #2b2d31;
       }
       .summary-head {
         display: flex;
@@ -197,13 +208,16 @@
       }
       .summary-sub {
         font-size: 12px;
-        color: #b5bac1;
+        /* The atlas's own mid-tone blue (see the shadow ring in its
+           border tiles), not #b5bac1 -- that gray was tuned to sit on
+           the dark page background, not this card's light fill. */
+        color: #4878a0;
       }
       .summary-close {
         margin-left: auto;
         background: none;
         border: none;
-        color: #b5bac1;
+        color: #2b2d31;
         font-size: 22px;
         line-height: 1;
         padding: 4px 8px;
@@ -217,13 +231,13 @@
         font-size: 13px;
         text-transform: uppercase;
         letter-spacing: 0.04em;
-        color: #b5bac1;
+        color: #4878a0;
         margin: 0 0 6px;
       }
       .summary-hpbar {
         height: 6px;
         border-radius: 3px;
-        background: #1e1f22;
+        background: rgba(43, 45, 49, 0.15);
         overflow: hidden;
         margin-bottom: 4px;
       }
@@ -236,10 +250,10 @@
         justify-content: space-between;
         font-size: 13px;
         padding: 3px 0;
-        border-bottom: 1px solid #35373c;
+        border-bottom: 1px solid rgba(72, 120, 160, 0.25);
       }
       .summary-row span:first-child {
-        color: #b5bac1;
+        color: #4878a0;
       }
       .summary-moves {
         display: grid;

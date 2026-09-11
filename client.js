@@ -4,7 +4,7 @@ import { DiscordSDK } from '@discord/embedded-app-sdk';
 // reached the client. Printed on the page, so a stale cached bundle is
 // immediately obvious instead of being indistinguishable from a bug --
 // the Activity is tested on mobile, where there are no devtools to check.
-const BUILD_MARKER = 'pc-v2';
+const BUILD_MARKER = 'pc-v3';
 
 const statusEl = document.getElementById('status');
 const partyEl = document.getElementById('party');
@@ -29,8 +29,31 @@ function log(message, isError = false) {
   console.log(message);
 }
 
+// Whether the custom @font-face actually resolved -- fire-and-forget,
+// run alongside main() rather than awaited in it, since the last round
+// of this (a real reported bug: "the text isn't using our otf") had no
+// way to tell "the font failed to load" apart from "the font loaded but
+// CSS never asked for it on this element" without opening devtools,
+// which isn't available while testing on a phone. This settles it either
+// way from the one screen that is available.
+function checkCustomFont() {
+  if (!('fonts' in document)) {
+    log('document.fonts unavailable -- cannot check the custom font load', true);
+    return;
+  }
+  document.fonts
+    .load('16px "Pokemon DS"')
+    .then((matches) => {
+      log(`custom font "Pokemon DS": ${matches.length > 0 ? 'loaded OK' : 'load() returned zero matches'}`);
+    })
+    .catch((err) => {
+      log(`custom font "Pokemon DS" failed to load: ${err && err.message ? err.message : err}`, true);
+    });
+}
+
 async function main() {
   log(`build ${BUILD_MARKER} · server booted ${window.SERVER_BOOT || 'unknown'}`);
+  checkCustomFont();
 
   const clientId = window.DISCORD_CLIENT_ID;
   if (!clientId) {
