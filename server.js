@@ -1,19 +1,26 @@
 const http = require('http');
 const fs = require('fs');
 const path = require('path');
+const url = require('url');
 
 const PORT = process.env.PORT || 5173;
 const DISCORD_CLIENT_ID = process.env.DISCORD_CLIENT_ID;
 const DISCORD_CLIENT_SECRET = process.env.DISCORD_CLIENT_SECRET;
 
 const server = http.createServer((req, res) => {
-  if (req.method === 'POST' && req.url === '/api/token') {
+  // Discord's proxy appends launch params to the URL (e.g.
+  // "/?instance_id=...&channel_id=...&guild_id=...&frame_id=...&platform=desktop"),
+  // so we compare against the pathname only, not the raw req.url, or every
+  // request from inside Discord fails to match and falls through to 404.
+  const pathname = url.parse(req.url).pathname;
+
+  if (req.method === 'POST' && pathname === '/api/token') {
     return handleTokenExchange(req, res);
   }
-  if (req.method === 'GET' && (req.url === '/' || req.url === '/index.html')) {
+  if (req.method === 'GET' && (pathname === '/' || pathname === '/index.html')) {
     return serveIndex(res);
   }
-  if (req.method === 'GET' && req.url === '/bundle.js') {
+  if (req.method === 'GET' && pathname === '/bundle.js') {
     return serveBundle(res);
   }
 
@@ -102,9 +109,6 @@ function handleTokenExchange(req, res) {
       });
 
       if (!tokenResponse.ok) {
-        // The response body here can include Discord's own error detail,
-        // which is fine to log server-side but never worth forwarding to
-        // the client -- it doesn't need to know why, just that it failed.
         console.error('Discord token exchange failed:', tokenResponse.status, await tokenResponse.text());
         res.writeHead(502, { 'Content-Type': 'application/json' });
         res.end(JSON.stringify({ error: 'Token exchange with Discord failed.' }));
