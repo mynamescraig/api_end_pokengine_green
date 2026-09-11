@@ -262,7 +262,24 @@ function handlePartyLookup(req, res) {
       return;
     }
 
-    const rawBody = await partyResponse.text();
+    let rawBody;
+    try {
+      rawBody = await partyResponse.text();
+    } catch (err) {
+      // Reading the body can fail on its own (a connection dropped
+      // mid-response). Left unguarded this rejects inside an async event
+      // callback, which Node treats as an unhandled rejection and exits
+      // the process for -- taking the whole service down over one bad
+      // request, and surfacing as an opaque 502 from Discord's proxy
+      // rather than anything this server ever gets to say.
+      console.error('Could not read the battle engine response body:', err);
+      sendJson(res, 502, {
+        error: 'The battle engine response could not be read.',
+        detail: describeError(err),
+      });
+      return;
+    }
+
     if (!partyResponse.ok) {
       console.error('Battle engine rejected the party lookup:', partyResponse.status, rawBody);
       sendJson(res, 502, {
@@ -314,6 +331,21 @@ function describeError(err) {
   const cause = err.cause && err.cause.message ? ` (${err.cause.message})` : '';
   return `${err.message || err}${cause}`;
 }
+
+// A request handler that throws where nothing catches it is, by default,
+// fatal: Node exits on an unhandled rejection, the container dies, and
+// what reaches the user is a Cloudflare "502 Bad gateway" from Discord's
+// proxy with nothing in it about what actually went wrong. That failure
+// mode cost real time here, so it gets a net. Staying alive after an
+// uncaughtException is a POC-grade choice -- process state could in
+// principle be suspect -- but for a service that only proxies two HTTP
+// calls, an entry in the log beats a container that vanished.
+process.on('unhandledRejection', (reason) => {
+  console.error('Unhandled promise rejection (request dropped, server staying up):', reason);
+});
+process.on('uncaughtException', (err) => {
+  console.error('Uncaught exception (server staying up):', err);
+});
 
 server.listen(PORT, () => {
   console.log(`Listening on port ${PORT}`);
