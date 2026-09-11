@@ -1,6 +1,7 @@
 import { DiscordSDK } from '@discord/embedded-app-sdk';
 
 const statusEl = document.getElementById('status');
+const partyEl = document.getElementById('party');
 
 async function main() {
   const clientId = window.DISCORD_CLIENT_ID;
@@ -34,14 +35,41 @@ async function main() {
   if (auth == null) {
     throw new Error('authenticate() returned no result.');
   }
-  return auth;
+
+  statusEl.textContent = `Logged in as ${auth.user.username}`;
+
+  // auth.access_token, not the one-time authorize() code -- the party
+  // lookup re-verifies identity server-side against this same token
+  // (see server.js's handlePartyLookup), it doesn't trust anything the
+  // client asserts about who it is.
+  const partyResponse = await fetch('/api/party', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ access_token: auth.access_token }),
+  });
+  if (!partyResponse.ok) {
+    throw new Error(`Party lookup failed: ${partyResponse.status}`);
+  }
+  const { party } = await partyResponse.json();
+  renderParty(party);
 }
 
-main()
-  .then((auth) => {
-    statusEl.textContent = `Logged in as ${auth.user.username}`;
-  })
-  .catch((err) => {
-    console.error('Discord Activity auth flow failed:', err);
-    statusEl.textContent = `Auth failed: ${err.message}`;
-  });
+function renderParty(party) {
+  partyEl.replaceChildren();
+  if (!party || party.length === 0) {
+    const li = document.createElement('li');
+    li.textContent = '(no party)';
+    partyEl.appendChild(li);
+    return;
+  }
+  for (const name of party) {
+    const li = document.createElement('li');
+    li.textContent = name;
+    partyEl.appendChild(li);
+  }
+}
+
+main().catch((err) => {
+  console.error('Discord Activity flow failed:', err);
+  statusEl.textContent = `Failed: ${err.message}`;
+});

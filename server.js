@@ -1,19 +1,32 @@
 const http = require('http');
 const fs = require('fs');
 const path = require('path');
+const url = require('url');
 
 const PORT = process.env.PORT || 5173;
 const DISCORD_CLIENT_ID = process.env.DISCORD_CLIENT_ID;
 const DISCORD_CLIENT_SECRET = process.env.DISCORD_CLIENT_SECRET;
+// Green's own HTTP API, never its database directly -- see handlePartyLookup.
+const GREEN_API_BASE_URL = process.env.GREEN_API_BASE_URL;
+const GREEN_API_TOKEN = process.env.GREEN_API_TOKEN;
 
 const server = http.createServer((req, res) => {
-  if (req.method === 'POST' && req.url === '/api/token') {
+  // Discord's proxy appends launch params to the URL (e.g.
+  // "/?instance_id=...&channel_id=...&guild_id=...&frame_id=...&platform=desktop"),
+  // so we compare against the pathname only, not the raw req.url, or every
+  // request from inside Discord fails to match and falls through to 404.
+  const pathname = url.parse(req.url).pathname;
+
+  if (req.method === 'POST' && pathname === '/api/token') {
     return handleTokenExchange(req, res);
   }
-  if (req.method === 'GET' && (req.url === '/' || req.url === '/index.html')) {
+  if (req.method === 'POST' && pathname === '/api/party') {
+    return handlePartyLookup(req, res);
+  }
+  if (req.method === 'GET' && (pathname === '/' || pathname === '/index.html')) {
     return serveIndex(res);
   }
-  if (req.method === 'GET' && req.url === '/bundle.js') {
+  if (req.method === 'GET' && pathname === '/bundle.js') {
     return serveBundle(res);
   }
 
@@ -116,6 +129,90 @@ function handleTokenExchange(req, res) {
       res.end(JSON.stringify({ access_token }));
     } catch (err) {
       console.error('Token exchange error:', err);
+      res.writeHead(500, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: 'Internal server error' }));
+    }
+  });
+}
+
+// Looks up the logged-in player's party through Green's own HTTP API --
+// never its MySQL database directly. Green's own README documents exactly
+// one precedent for an external/different-language consumer (the Paper
+// Minecraft plugin), and it goes through this same API rather than the
+// database, specifically so access control (api/auth.py) and the
+// trainer_id/account-linking resolution logic (db/trainer_links.py --
+// linking repoints a Minecraft player's data to live under their Discord
+// snowflake) stay owned in exactly one place. A raw SQL client here would
+// have to reimplement that logic and would silently drift out of sync
+// with Green's own schema as it evolves; going through the API means this
+// service inherits fixes for free.
+function handlePartyLookup(req, res) {
+  let body = '';
+  req.on('data', (chunk) => {
+    body += chunk;
+  });
+  req.on('end', async () => {
+    let accessToken;
+    try {
+      ({ access_token: accessToken } = JSON.parse(body || '{}'));
+    } catch {
+      res.writeHead(400, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: 'Invalid JSON body' }));
+      return;
+    }
+    if (!accessToken) {
+      res.writeHead(400, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: 'Missing access_token' }));
+      return;
+    }
+    if (!GREEN_API_BASE_URL || !GREEN_API_TOKEN) {
+      console.error('GREEN_API_BASE_URL / GREEN_API_TOKEN is not set.');
+      res.writeHead(500, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: 'Server is not configured to reach the battle engine.' }));
+      return;
+    }
+
+    try {
+      // Never trust a client-supplied Discord id -- ask Discord itself
+      // who this access_token actually belongs to. A forged/stale id in
+      // the request body would otherwise let any caller request any
+      // player's party.
+      const meResponse = await fetch('https://discord.com/api/users/@me', {
+        headers: { Authorization: `Bearer ${accessToken}` },
+      });
+      if (!meResponse.ok) {
+        res.writeHead(401, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: 'Could not verify Discord identity.' }));
+        return;
+      }
+      const { id: discordId } = await meResponse.json();
+
+      // trainer_id IS the Discord snowflake for this id -- true for a
+      // Discord-originated account, and also true after a Minecraft
+      // player links their Discord (linking repoints their party to live
+      // here, per Green's db/trainer_links.py). A player who has never
+      // linked simply has no row, and Green's own get_party already
+      // reports that as an empty party rather than an error, so nothing
+      // extra is needed here for that case.
+      const partyResponse = await fetch(`${GREEN_API_BASE_URL}/v1/trainers/${discordId}/party`, {
+        headers: { Authorization: `Bearer ${GREEN_API_TOKEN}` },
+      });
+      if (!partyResponse.ok) {
+        console.error('Green party lookup failed:', partyResponse.status, await partyResponse.text());
+        res.writeHead(502, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: 'Party lookup failed.' }));
+        return;
+      }
+      const { members } = await partyResponse.json();
+      // proper_name, not nickname -- the ask is species names, and an
+      // egg slot's proper_name already comes back as "Egg" (Green masks
+      // it at the API boundary), so no special-casing is needed here.
+      const party = (members || []).map((member) => member.proper_name);
+
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ party }));
+    } catch (err) {
+      console.error('Party lookup error:', err);
       res.writeHead(500, { 'Content-Type': 'application/json' });
       res.end(JSON.stringify({ error: 'Internal server error' }));
     }
