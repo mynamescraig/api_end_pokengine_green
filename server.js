@@ -15,6 +15,15 @@ const GREEN_API_TOKEN = process.env.GREEN_API_TOKEN;
 // container or a cache holding something older.
 const SERVER_BOOT = new Date().toISOString();
 
+// Node's fetch has no default timeout, and a hung outbound call is
+// indistinguishable, from the outside, from this server being broken:
+// the handler never responds, Railway's gateway eventually gives up, and
+// what the Activity receives is a Cloudflare "502 Bad gateway" naming
+// this host -- with nothing in it about which call stalled or why. These
+// caps mean this server always answers something it chose to say.
+const DISCORD_TIMEOUT_MS = 10_000;
+const ENGINE_TIMEOUT_MS = 15_000;
+
 // index.html was updating on deploy while bundle.js stayed frozen on an
 // old build -- the page's CSS was current but its JavaScript wasn't, so
 // something between this server and the browser (Discord's own Activity
@@ -46,6 +55,16 @@ const server = http.createServer((req, res) => {
   // URL constructor needs a base to parse against -- any base works,
   // since only .pathname is ever read from the result.
   const pathname = new URL(req.url, 'http://localhost').pathname;
+
+  // Deliberately the one route that touches nothing external: if a
+  // platform healthcheck is pointed at this service and gets a 404, the
+  // deploy is marked unhealthy and the container is cycled -- which from
+  // the outside looks exactly like the intermittent "502 Bad gateway"
+  // this service was returning, on requests that never reached any
+  // handler. Answering here costs nothing and removes that explanation.
+  if (req.method === 'GET' && (pathname === '/health' || pathname === '/healthz')) {
+    return sendJson(res, 200, { status: 'ok', booted: SERVER_BOOT });
+  }
 
   if (req.method === 'POST' && pathname === '/api/token') {
     return handleTokenExchange(req, res);
@@ -218,9 +237,11 @@ function handlePartyLookup(req, res) {
     // battle engine unreachable) and named neither, which is exactly what
     // made this take three rounds of screenshots to pin down.
     let discordId;
+    const discordStartedAt = Date.now();
     try {
       const meResponse = await fetch('https://discord.com/api/users/@me', {
         headers: { Authorization: `Bearer ${accessToken}` },
+        signal: AbortSignal.timeout(DISCORD_TIMEOUT_MS),
       });
       if (!meResponse.ok) {
         res.writeHead(401, { 'Content-Type': 'application/json' });
@@ -228,10 +249,18 @@ function handlePartyLookup(req, res) {
         return;
       }
       ({ id: discordId } = await meResponse.json());
+      console.log(`Discord identity resolved in ${Date.now() - discordStartedAt}ms`);
     } catch (err) {
-      console.error('Discord identity lookup failed:', err);
-      sendJson(res, 502, {
-        error: 'Could not reach Discord to verify identity.',
+      const timedOut = err && err.name === 'TimeoutError';
+      console.error(
+        `Discord identity lookup ${timedOut ? 'timed out' : 'failed'} after ` +
+          `${Date.now() - discordStartedAt}ms:`,
+        err
+      );
+      sendJson(res, timedOut ? 504 : 502, {
+        error: timedOut
+          ? `Discord did not respond within ${DISCORD_TIMEOUT_MS}ms.`
+          : 'Could not reach Discord to verify identity.',
         detail: describeError(err),
       });
       return;
@@ -246,17 +275,31 @@ function handlePartyLookup(req, res) {
     // for that case.
     const partyUrl = `${GREEN_API_BASE_URL}/v1/trainers/${discordId}/party`;
     let partyResponse;
+    const engineStartedAt = Date.now();
     try {
       partyResponse = await fetch(partyUrl, {
         headers: { Authorization: `Bearer ${GREEN_API_TOKEN}` },
+        signal: AbortSignal.timeout(ENGINE_TIMEOUT_MS),
       });
+      console.log(
+        `Battle engine answered ${partyResponse.status} in ${Date.now() - engineStartedAt}ms`
+      );
     } catch (err) {
-      // Never reached the engine at all: a bad URL (a GREEN_API_BASE_URL
-      // missing its scheme is the classic one), DNS, TLS, or nothing
-      // listening.
-      console.error('Battle engine request failed:', partyUrl, err);
-      sendJson(res, 502, {
-        error: 'Could not reach the battle engine.',
+      // Either never reached the engine at all -- a bad URL (a
+      // GREEN_API_BASE_URL missing its scheme is the classic one), DNS,
+      // TLS, nothing listening -- or reached it and waited past the cap,
+      // which is what an accepted-but-unanswered connection looks like.
+      const timedOut = err && err.name === 'TimeoutError';
+      console.error(
+        `Battle engine request ${timedOut ? 'timed out' : 'failed'} after ` +
+          `${Date.now() - engineStartedAt}ms:`,
+        partyUrl,
+        err
+      );
+      sendJson(res, timedOut ? 504 : 502, {
+        error: timedOut
+          ? `The battle engine did not respond within ${ENGINE_TIMEOUT_MS}ms.`
+          : 'Could not reach the battle engine.',
         detail: describeError(err),
       });
       return;
