@@ -7,7 +7,16 @@ const PORT = process.env.PORT || 5173;
 const DISCORD_CLIENT_ID = process.env.DISCORD_CLIENT_ID;
 const DISCORD_CLIENT_SECRET = process.env.DISCORD_CLIENT_SECRET;
 // Green's own HTTP API, never its database directly -- see handlePartyLookup.
-const GREEN_API_BASE_URL = process.env.GREEN_API_BASE_URL;
+// Trailing slashes stripped, because the configured value is a base and
+// every use of it appends a path starting with "/". Left as-is, a base
+// ending in "/" produces "https://host//v1/trainers/...", and the
+// engine's router matches "/v1/trainers/..." exactly -- the double slash
+// is a different path, so it 404s. Normalising here rather than asking
+// the environment variable to be written a particular way: both spellings
+// are things people reasonably type, and only one of them can be wrong.
+const GREEN_API_BASE_URL = process.env.GREEN_API_BASE_URL
+  ? process.env.GREEN_API_BASE_URL.replace(/\/+$/, '')
+  : process.env.GREEN_API_BASE_URL;
 const GREEN_API_TOKEN = process.env.GREEN_API_TOKEN;
 
 // Shown on the page. Tells a tester on mobile -- where there are no
@@ -543,8 +552,8 @@ server.listen(PORT, () => {
   try {
     const parsed = new URL(GREEN_API_BASE_URL);
     console.log(`Battle engine base URL: ${parsed.protocol}//${parsed.host}`);
-    if (GREEN_API_BASE_URL.endsWith('/')) {
-      console.warn('GREEN_API_BASE_URL ends with a slash; paths will contain "//".');
+    if (process.env.GREEN_API_BASE_URL !== GREEN_API_BASE_URL) {
+      console.log(`(normalised from "${process.env.GREEN_API_BASE_URL}")`);
     }
   } catch {
     console.error(
