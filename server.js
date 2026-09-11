@@ -1,7 +1,6 @@
 const http = require('http');
 const fs = require('fs');
 const path = require('path');
-const url = require('url');
 
 const PORT = process.env.PORT || 5173;
 const DISCORD_CLIENT_ID = process.env.DISCORD_CLIENT_ID;
@@ -15,7 +14,10 @@ const server = http.createServer((req, res) => {
   // "/?instance_id=...&channel_id=...&guild_id=...&frame_id=...&platform=desktop"),
   // so we compare against the pathname only, not the raw req.url, or every
   // request from inside Discord fails to match and falls through to 404.
-  const pathname = url.parse(req.url).pathname;
+  // req.url is always relative (e.g. "/api/token?foo=bar"), so the WHATWG
+  // URL constructor needs a base to parse against -- any base works,
+  // since only .pathname is ever read from the result.
+  const pathname = new URL(req.url, 'http://localhost').pathname;
 
   if (req.method === 'POST' && pathname === '/api/token') {
     return handleTokenExchange(req, res);
