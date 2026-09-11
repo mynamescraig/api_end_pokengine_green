@@ -25,6 +25,82 @@
         padding-left: 22px;
         font-size: 16px;
       }
+
+      /* Six columns x five rows is the box shape the mainline games use,
+         and the shape Green's BOX_SIZE of 30 assumes. Fixed columns
+         rather than auto-fill so a box looks like a box at any width --
+         the cells shrink on a narrow phone instead of the grid reflowing
+         into a different arrangement than the one on a desktop. */
+      #pc {
+        margin: 0 0 20px;
+      }
+      .pc-header {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 8px;
+        margin-bottom: 10px;
+      }
+      .pc-title {
+        font-size: 16px;
+        font-weight: 600;
+      }
+      .pc-count {
+        font-size: 12px;
+        color: #b5bac1;
+      }
+      .pc-nav {
+        background: #2b2d31;
+        color: #f2f3f5;
+        border: 1px solid #3f4147;
+        border-radius: 6px;
+        font-size: 18px;
+        line-height: 1;
+        padding: 8px 14px;
+        cursor: pointer;
+      }
+      .pc-nav:disabled {
+        opacity: 0.35;
+        cursor: default;
+      }
+      .pc-grid {
+        display: grid;
+        grid-template-columns: repeat(6, 1fr);
+        gap: 4px;
+      }
+      .pc-cell {
+        position: relative;
+        aspect-ratio: 1;
+        background: #2b2d31;
+        border-radius: 6px;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+      }
+      .pc-cell.empty {
+        background: #232428;
+      }
+      .pc-cell img {
+        width: 100%;
+        height: 100%;
+        object-fit: contain;
+        /* Sprites are small GIFs meant to be seen at this size; letting
+           the browser smooth them turns them to mush. */
+        image-rendering: pixelated;
+      }
+      .pc-cell .shiny {
+        position: absolute;
+        top: 2px;
+        right: 3px;
+        font-size: 10px;
+      }
+      .pc-cell .lvl {
+        position: absolute;
+        bottom: 1px;
+        left: 4px;
+        font-size: 9px;
+        color: #b5bac1;
+      }
       #log {
         font-size: 12px;
         line-height: 1.6;
@@ -40,6 +116,7 @@
   <body>
     <h1 id="status">Connecting to Discord...</h1>
     <ul id="party"></ul>
+    <div id="pc"></div>
     <div id="log"></div>
     <script>
       window.DISCORD_CLIENT_ID = "%%DISCORD_CLIENT_ID%%";

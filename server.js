@@ -129,6 +129,12 @@ const server = http.createServer((req, res) => {
   if (req.method === 'POST' && pathname === '/api/party') {
     return handlePartyLookup(req, res);
   }
+  if (req.method === 'POST' && pathname === '/api/pc') {
+    return handlePcLookup(req, res);
+  }
+  if (req.method === 'GET' && pathname === '/api/sprite') {
+    return handleSprite(req, res);
+  }
   if (req.method === 'GET' && (pathname === '/' || pathname === '/index.html')) {
     return serveIndex(res);
   }
@@ -246,164 +252,248 @@ function handleTokenExchange(req, res) {
   });
 }
 
-// Looks up the logged-in player's party through Green's own HTTP API --
-// never its MySQL database directly. Green's own README documents exactly
-// one precedent for an external/different-language consumer (the Paper
-// Minecraft plugin), and it goes through this same API rather than the
-// database, specifically so access control (api/auth.py) and the
-// trainer_id/account-linking resolution logic (db/trainer_links.py --
-// linking repoints a Minecraft player's data to live under their Discord
-// snowflake) stay owned in exactly one place. A raw SQL client here would
-// have to reimplement that logic and would silently drift out of sync
-// with Green's own schema as it evolves; going through the API means this
-// service inherits fixes for free.
-function handlePartyLookup(req, res) {
-  let body = '';
-  req.on('data', (chunk) => {
-    body += chunk;
-  });
-  req.on('end', async () => {
-    let accessToken;
-    try {
-      ({ access_token: accessToken } = JSON.parse(body || '{}'));
-    } catch {
-      res.writeHead(400, { 'Content-Type': 'application/json' });
-      res.end(JSON.stringify({ error: 'Invalid JSON body' }));
-      return;
-    }
-    if (!accessToken) {
-      res.writeHead(400, { 'Content-Type': 'application/json' });
-      res.end(JSON.stringify({ error: 'Missing access_token' }));
-      return;
-    }
-    if (!GREEN_API_BASE_URL || !GREEN_API_TOKEN) {
-      console.error('GREEN_API_BASE_URL / GREEN_API_TOKEN is not set.');
-      res.writeHead(500, { 'Content-Type': 'application/json' });
-      res.end(JSON.stringify({ error: 'Server is not configured to reach the battle engine.' }));
-      return;
-    }
-
-    // Never trust a client-supplied Discord id -- ask Discord itself who
-    // this access_token actually belongs to. A forged/stale id in the
-    // request body would otherwise let any caller request any player's
-    // party.
-    //
-    // Each outbound call gets its own try/catch, rather than one block
-    // around the lot: a single catch-all reported "Internal server error"
-    // for two completely different failures (Discord unreachable vs the
-    // battle engine unreachable) and named neither, which is exactly what
-    // made this take three rounds of screenshots to pin down.
-    let discordId;
-    const discordStartedAt = Date.now();
-    try {
-      const meResponse = await fetch('https://discord.com/api/users/@me', {
-        headers: { Authorization: `Bearer ${accessToken}` },
-        signal: AbortSignal.timeout(DISCORD_TIMEOUT_MS),
-      });
-      if (!meResponse.ok) {
-        res.writeHead(401, { 'Content-Type': 'application/json' });
-        res.end(JSON.stringify({ error: 'Could not verify Discord identity.' }));
-        return;
+/**
+ * The shared shape of every authenticated lookup here: read a JSON body,
+ * prove who the caller is against Discord, ask Green, hand back what it
+ * said.
+ *
+ * Everything goes through Green's own HTTP API and never its MySQL
+ * database. Green's README documents exactly one precedent for an
+ * external consumer (the Paper Minecraft plugin) and it goes through this
+ * same API, specifically so access control (api/auth.py) and the
+ * trainer_id/account-linking rules (db/trainer_links.py -- linking
+ * repoints a Minecraft player's data to live under their Discord
+ * snowflake) stay owned in one place. A SQL client here would reimplement
+ * both and drift from Green's schema; going through the API inherits
+ * fixes for free.
+ */
+function readJsonBody(req) {
+  return new Promise((resolve, reject) => {
+    let body = '';
+    req.on('data', (chunk) => {
+      body += chunk;
+    });
+    req.on('end', () => {
+      try {
+        resolve(JSON.parse(body || '{}'));
+      } catch (err) {
+        reject(err);
       }
-      ({ id: discordId } = await meResponse.json());
-      console.log(`Discord identity resolved in ${Date.now() - discordStartedAt}ms`);
-    } catch (err) {
-      const timedOut = err && err.name === 'TimeoutError';
-      console.error(
-        `Discord identity lookup ${timedOut ? 'timed out' : 'failed'} after ` +
-          `${Date.now() - discordStartedAt}ms:`,
-        err
-      );
-      sendFailure(res, {
+    });
+    req.on('error', reject);
+  });
+}
+
+/**
+ * Who does this access token actually belong to?
+ *
+ * Asked of Discord rather than taken from the request body on purpose: a
+ * client-supplied id would let any caller read any player's storage.
+ * Returns {discordId} or {failure}, so the caller decides how to answer.
+ */
+async function verifyDiscordIdentity(accessToken) {
+  const startedAt = Date.now();
+  try {
+    const response = await fetch('https://discord.com/api/users/@me', {
+      headers: { Authorization: `Bearer ${accessToken}` },
+      signal: AbortSignal.timeout(DISCORD_TIMEOUT_MS),
+    });
+    if (!response.ok) {
+      return { failure: { error: 'Could not verify Discord identity.', upstreamStatus: response.status } };
+    }
+    const { id } = await response.json();
+    console.log(`Discord identity resolved in ${Date.now() - startedAt}ms`);
+    return { discordId: id };
+  } catch (err) {
+    const timedOut = Boolean(err && err.name === 'TimeoutError');
+    console.error(
+      `Discord identity lookup ${timedOut ? 'timed out' : 'failed'} after ${Date.now() - startedAt}ms:`,
+      err
+    );
+    return {
+      failure: {
         error: timedOut
           ? `Discord did not respond within ${DISCORD_TIMEOUT_MS}ms.`
           : 'Could not reach Discord to verify identity.',
         detail: describeError(err),
-      });
-      return;
-    }
+      },
+    };
+  }
+}
 
-    // trainer_id IS the Discord snowflake for this id -- true for a
-    // Discord-originated account, and also true after a Minecraft player
-    // links their Discord (linking repoints their party to live here, per
-    // Green's db/trainer_links.py). A player who has never linked simply
-    // has no row, and Green's own get_party already reports that as an
-    // empty party rather than an error, so nothing extra is needed here
-    // for that case.
-    const partyUrl = `${GREEN_API_BASE_URL}/v1/trainers/${discordId}/party`;
-    let partyResponse;
-    const engineStartedAt = Date.now();
-    try {
-      partyResponse = await fetch(partyUrl, {
-        headers: { Authorization: `Bearer ${GREEN_API_TOKEN}` },
-        signal: AbortSignal.timeout(ENGINE_TIMEOUT_MS),
-      });
-      console.log(
-        `Battle engine answered ${partyResponse.status} in ${Date.now() - engineStartedAt}ms`
-      );
-    } catch (err) {
-      // Either never reached the engine at all -- a bad URL (a
-      // GREEN_API_BASE_URL missing its scheme is the classic one), DNS,
-      // TLS, nothing listening -- or reached it and waited past the cap,
-      // which is what an accepted-but-unanswered connection looks like.
-      const timedOut = err && err.name === 'TimeoutError';
-      console.error(
-        `Battle engine request ${timedOut ? 'timed out' : 'failed'} after ` +
-          `${Date.now() - engineStartedAt}ms:`,
-        partyUrl,
-        err
-      );
-      sendFailure(res, {
+/**
+ * GET a path from Green, parsed. Returns {data} or {failure}.
+ *
+ * Each failure names itself rather than collapsing into one message:
+ * unreachable, too slow, rejected, and unparseable are four different
+ * problems with four different fixes, and reporting them identically is
+ * what made an earlier bug here take far longer than it should have.
+ */
+async function getFromEngine(path) {
+  const url = `${GREEN_API_BASE_URL}${path}`;
+  const startedAt = Date.now();
+
+  let response;
+  try {
+    response = await fetch(url, {
+      headers: { Authorization: `Bearer ${GREEN_API_TOKEN}` },
+      signal: AbortSignal.timeout(ENGINE_TIMEOUT_MS),
+    });
+    console.log(`Battle engine answered ${response.status} for ${path} in ${Date.now() - startedAt}ms`);
+  } catch (err) {
+    const timedOut = Boolean(err && err.name === 'TimeoutError');
+    console.error(
+      `Battle engine request ${timedOut ? 'timed out' : 'failed'} after ${Date.now() - startedAt}ms:`,
+      url,
+      err
+    );
+    return {
+      failure: {
         error: timedOut
           ? `The battle engine did not respond within ${ENGINE_TIMEOUT_MS}ms.`
           : 'Could not reach the battle engine.',
         detail: describeError(err),
-      });
-      return;
-    }
+      },
+    };
+  }
 
-    let rawBody;
-    try {
-      rawBody = await partyResponse.text();
-    } catch (err) {
-      // Reading the body can fail on its own (a connection dropped
-      // mid-response). Left unguarded this rejects inside an async event
-      // callback, which Node treats as an unhandled rejection and exits
-      // the process for -- taking the whole service down over one bad
-      // request, and surfacing as an opaque 502 from Discord's proxy
-      // rather than anything this server ever gets to say.
-      console.error('Could not read the battle engine response body:', err);
-      sendFailure(res, {
-        error: 'The battle engine response could not be read.',
-        detail: describeError(err),
-      });
-      return;
-    }
+  let rawBody;
+  try {
+    rawBody = await response.text();
+  } catch (err) {
+    // Reading the body can fail on its own when a connection drops
+    // mid-response. Unguarded, that rejects inside an async handler,
+    // which Node exits the process for -- one bad response would take the
+    // whole service down.
+    console.error('Could not read the battle engine response body:', err);
+    return { failure: { error: 'The battle engine response could not be read.', detail: describeError(err) } };
+  }
 
-    if (!partyResponse.ok) {
-      console.error('Battle engine rejected the party lookup:', partyResponse.status, rawBody);
-      sendFailure(res, {
-        error: 'The battle engine rejected the party lookup.',
-        upstreamStatus: partyResponse.status,
+  if (!response.ok) {
+    console.error('Battle engine rejected the request:', path, response.status, rawBody);
+    return {
+      failure: {
+        error: 'The battle engine rejected the request.',
+        upstreamStatus: response.status,
         detail: rawBody.slice(0, 200),
-      });
-      return;
-    }
+      },
+    };
+  }
 
-    try {
-      const { members } = JSON.parse(rawBody);
-      // proper_name, not nickname -- the ask is species names, and an egg
-      // slot's proper_name already comes back as "Egg" (Green masks it at
-      // the API boundary), so no special-casing is needed here.
-      const party = (members || []).map((member) => member.proper_name);
-      sendJson(res, 200, { party });
-    } catch (err) {
-      console.error('Could not parse the battle engine response:', err, rawBody.slice(0, 200));
-      sendFailure(res, {
-        error: 'The battle engine returned something unreadable.',
-        detail: describeError(err),
-      });
-    }
+  try {
+    return { data: JSON.parse(rawBody) };
+  } catch (err) {
+    console.error('Could not parse the battle engine response:', err, rawBody.slice(0, 200));
+    return { failure: { error: 'The battle engine returned something unreadable.', detail: describeError(err) } };
+  }
+}
+
+/**
+ * Body -> verified Discord id, or a response already sent.
+ * Returns null when it has answered the request itself.
+ */
+async function authenticatedTrainerId(req, res) {
+  let payload;
+  try {
+    payload = await readJsonBody(req);
+  } catch {
+    sendJson(res, 400, { error: 'Invalid JSON body' });
+    return null;
+  }
+
+  const accessToken = payload.access_token;
+  if (!accessToken) {
+    sendJson(res, 400, { error: 'Missing access_token' });
+    return null;
+  }
+  if (!GREEN_API_BASE_URL || !GREEN_API_TOKEN) {
+    console.error('GREEN_API_BASE_URL / GREEN_API_TOKEN is not set.');
+    sendFailure(res, { error: 'Server is not configured to reach the battle engine.' });
+    return null;
+  }
+
+  const { discordId, failure } = await verifyDiscordIdentity(accessToken);
+  if (failure) {
+    sendFailure(res, failure);
+    return null;
+  }
+
+  // trainer_id IS the Discord snowflake -- true for a Discord-originated
+  // account, and still true after a Minecraft player links their Discord,
+  // since linking repoints their data to live under it. A player who has
+  // never linked simply has no row, which Green reports as empty rather
+  // than as an error.
+  return { discordId, requestBody: payload };
+}
+
+async function handlePartyLookup(req, res) {
+  const authenticated = await authenticatedTrainerId(req, res);
+  if (!authenticated) {
+    return;
+  }
+
+  const { data, failure } = await getFromEngine(`/v1/trainers/${authenticated.discordId}/party`);
+  if (failure) {
+    sendFailure(res, failure);
+    return;
+  }
+
+  // proper_name, not nickname -- the ask is species names, and an egg
+  // slot's proper_name already comes back as "Egg" because Green masks it
+  // at the API boundary, so no special-casing is needed here.
+  sendJson(res, 200, { party: (data.members || []).map((member) => member.proper_name) });
+}
+
+/**
+ * One box of the player's PC, shaped for a grid.
+ *
+ * Green returns only the slots that are FILLED, plus the box size -- a
+ * box is thirty positions with holes in it, not a list. The client draws
+ * thirty cells and puts each member in the slot it names, so the holes
+ * are the client's business and the engine never has to send nulls.
+ *
+ * `box` is passed straight through when given and omitted when not:
+ * omitting it means "wherever this trainer left off", which is what
+ * opening the PC should do, while turning a page names its box. Zero is
+ * a real box number, so the check is for undefined rather than falsy.
+ */
+async function handlePcLookup(req, res) {
+  const authenticated = await authenticatedTrainerId(req, res);
+  if (!authenticated) {
+    return;
+  }
+
+  const requestedBox = authenticated.requestBody.box;
+  const query = Number.isInteger(requestedBox) && requestedBox >= 0 ? `?box=${requestedBox}` : '';
+
+  const { data, failure } = await getFromEngine(
+    `/v1/trainers/${authenticated.discordId}/pc${query}`
+  );
+  if (failure) {
+    sendFailure(res, failure);
+    return;
+  }
+
+  sendJson(res, 200, {
+    box: data.page,
+    boxCount: data.page_count,
+    boxSize: data.page_size,
+    storedCount: data.stored_count,
+    storageCap: data.storage_cap,
+    // Null means this box was never named; "Box N" is a display decision
+    // and Green deliberately doesn't store it on every row.
+    name: data.name,
+    wallpaper: data.wallpaper,
+    members: (data.members || []).map((member) => ({
+      uuid: member.uuid,
+      slot: member.box_slot,
+      name: member.nickname || member.proper_name,
+      species: member.proper_name,
+      level: member.level,
+      shiny: Boolean(member.shiny),
+      isEgg: Boolean(member.is_egg),
+      iconUrl: member.icon_url,
+    })),
   });
 }
 
@@ -502,6 +592,58 @@ async function probe(url, headers) {
       ms: Date.now() - startedAt,
       error: describeError(err),
     };
+  }
+}
+
+// The sprite CDN Green's own icon_url values point at. Sprites are
+// proxied through this server rather than loaded straight from there,
+// because an Activity runs inside Discord's iframe, where external
+// origins need an explicit URL Mapping in the developer portal before
+// anything will load. Same-origin needs no configuration and can't
+// silently break when a mapping is missing.
+const SPRITE_ORIGIN = 'https://f005.backblazeb2.com/file/pokeNgine-icons-database/';
+
+/**
+ * Proxy one sprite, by the exact URL Green handed out.
+ *
+ * The allowlist check is the whole security story: without it this is an
+ * open proxy that would fetch any URL a caller names, from inside this
+ * service's own network. Only URLs that start with the sprite bucket get
+ * through, so the parameter can't be pointed anywhere else.
+ *
+ * Cached hard, unlike the HTML and bundle: a sprite for a given species,
+ * form and shininess never changes, and a PC box asks for thirty of them
+ * at once.
+ */
+async function handleSprite(req, res) {
+  const requested = new URL(req.url, 'http://localhost').searchParams.get('url');
+  if (!requested || !requested.startsWith(SPRITE_ORIGIN)) {
+    sendJson(res, 400, { error: 'url must be a sprite on the known icon CDN.' });
+    return;
+  }
+
+  try {
+    const upstream = await fetch(requested, { signal: AbortSignal.timeout(ENGINE_TIMEOUT_MS) });
+    if (!upstream.ok) {
+      // A missing sprite is ordinary -- not every species/form/gender
+      // combination has its own art -- so it is passed through as a plain
+      // status for the page to draw a placeholder for, not logged as an
+      // error on every box that contains one.
+      res.writeHead(upstream.status, { 'Cache-Control': 'public, max-age=3600' });
+      res.end();
+      return;
+    }
+    const body = Buffer.from(await upstream.arrayBuffer());
+    res.writeHead(200, {
+      'Content-Type': upstream.headers.get('content-type') || 'image/png',
+      'Content-Length': body.length,
+      'Cache-Control': 'public, max-age=604800, immutable',
+    });
+    res.end(body);
+  } catch (err) {
+    console.error('Sprite proxy failed:', requested, err);
+    res.writeHead(502, { 'Cache-Control': 'no-store' });
+    res.end();
   }
 }
 

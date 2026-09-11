@@ -4,11 +4,16 @@ import { DiscordSDK } from '@discord/embedded-app-sdk';
 // reached the client. Printed on the page, so a stale cached bundle is
 // immediately obvious instead of being indistinguishable from a bug --
 // the Activity is tested on mobile, where there are no devtools to check.
-const BUILD_MARKER = 'party-v5';
+const BUILD_MARKER = 'pc-v1';
 
 const statusEl = document.getElementById('status');
 const partyEl = document.getElementById('party');
+const pcEl = document.getElementById('pc');
 const logEl = document.getElementById('log');
+
+// Held so turning a page can re-ask without re-running the whole auth
+// flow. Set once authenticate() succeeds.
+let sessionToken = null;
 
 // Everything interesting goes on the page, not just the console: inside
 // the Discord mobile client there is no way to read a console, so a step
@@ -102,6 +107,134 @@ async function main() {
   const { party } = payload;
   log(`party members: ${Array.isArray(party) ? party.length : 'not an array'}`);
   renderParty(party);
+
+  sessionToken = partyToken;
+  // No box named: Green reads that as "wherever this trainer left off",
+  // which is what opening the PC should do rather than always landing on
+  // box one.
+  await loadBox(undefined);
+}
+
+/**
+ * Fetch and draw one box.
+ *
+ * `box` undefined on the first call and an explicit number when turning
+ * a page -- zero is a real box, so the distinction is undefined vs
+ * number, not falsy vs truthy.
+ */
+async function loadBox(box) {
+  const body = { access_token: sessionToken };
+  if (box !== undefined) {
+    body.box = box;
+  }
+
+  const response = await fetch('/api/pc', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(body),
+  });
+  const payload = await response.json();
+  if (payload.ok === false) {
+    throw new Error([payload.error, payload.detail].filter(Boolean).join(' :: '));
+  }
+
+  log(`box ${payload.box + 1}/${payload.boxCount}: ${payload.members.length} stored`);
+  renderBox(payload);
+}
+
+function renderBox(data) {
+  pcEl.replaceChildren();
+
+  const header = document.createElement('div');
+  header.className = 'pc-header';
+
+  const previous = document.createElement('button');
+  previous.className = 'pc-nav';
+  previous.textContent = '‹';
+  previous.disabled = data.box <= 0;
+
+  const title = document.createElement('div');
+  title.className = 'pc-title';
+  // Green sends null when a box was never renamed -- "Box N" is a display
+  // decision, deliberately not stored per row.
+  title.textContent = data.name || `Box ${data.box + 1}`;
+
+  const count = document.createElement('div');
+  count.className = 'pc-count';
+  count.textContent = `${data.storedCount} stored · box ${data.box + 1} of ${data.boxCount}`;
+  title.appendChild(count);
+
+  const next = document.createElement('button');
+  next.className = 'pc-nav';
+  next.textContent = '›';
+  next.disabled = data.box >= data.boxCount - 1;
+
+  // Wrapping around at the ends was deliberately not done: the PC has a
+  // real first and last box, and a disabled arrow says where you are.
+  previous.addEventListener('click', () => turnPage(data.box - 1));
+  next.addEventListener('click', () => turnPage(data.box + 1));
+
+  header.append(previous, title, next);
+  pcEl.appendChild(header);
+
+  const grid = document.createElement('div');
+  grid.className = 'pc-grid';
+
+  // Green sends only the FILLED slots, because a box is thirty positions
+  // with holes rather than a list -- so the grid is drawn from the slot
+  // numbers, not from the order members arrive in.
+  const bySlot = new Map(data.members.map((member) => [member.slot, member]));
+  for (let slot = 0; slot < data.boxSize; slot += 1) {
+    grid.appendChild(renderCell(bySlot.get(slot)));
+  }
+
+  pcEl.appendChild(grid);
+}
+
+function renderCell(member) {
+  const cell = document.createElement('div');
+  cell.className = member ? 'pc-cell' : 'pc-cell empty';
+  if (!member) {
+    return cell;
+  }
+
+  if (member.iconUrl) {
+    const img = document.createElement('img');
+    // Proxied rather than loaded straight from the CDN: an Activity's
+    // iframe needs an explicit URL Mapping before an external origin
+    // will load, and same-origin needs no configuration at all.
+    img.src = `/api/sprite?url=${encodeURIComponent(member.iconUrl)}`;
+    img.alt = member.name;
+    img.loading = 'lazy';
+    cell.appendChild(img);
+  }
+
+  // title, so a tap-and-hold or hover names the occupant -- the grid is
+  // too small for labels, and this is a browsing view with no detail
+  // screen behind it yet.
+  cell.title = member.isEgg
+    ? 'Egg'
+    : `${member.name}${member.level ? ` · Lv ${member.level}` : ''}`;
+
+  if (member.shiny) {
+    const mark = document.createElement('span');
+    mark.className = 'shiny';
+    mark.textContent = '✨';
+    cell.appendChild(mark);
+  }
+  if (member.level && !member.isEgg) {
+    const level = document.createElement('span');
+    level.className = 'lvl';
+    level.textContent = member.level;
+    cell.appendChild(level);
+  }
+  return cell;
+}
+
+function turnPage(box) {
+  loadBox(box).catch((err) => {
+    log(`could not turn to box ${box + 1}: ${err && err.message ? err.message : err}`, true);
+  });
 }
 
 function renderParty(party) {
