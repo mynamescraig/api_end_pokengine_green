@@ -314,7 +314,7 @@ function handlePartyLookup(req, res) {
           `${Date.now() - discordStartedAt}ms:`,
         err
       );
-      sendJson(res, timedOut ? 504 : 502, {
+      sendFailure(res, {
         error: timedOut
           ? `Discord did not respond within ${DISCORD_TIMEOUT_MS}ms.`
           : 'Could not reach Discord to verify identity.',
@@ -353,7 +353,7 @@ function handlePartyLookup(req, res) {
         partyUrl,
         err
       );
-      sendJson(res, timedOut ? 504 : 502, {
+      sendFailure(res, {
         error: timedOut
           ? `The battle engine did not respond within ${ENGINE_TIMEOUT_MS}ms.`
           : 'Could not reach the battle engine.',
@@ -373,7 +373,7 @@ function handlePartyLookup(req, res) {
       // request, and surfacing as an opaque 502 from Discord's proxy
       // rather than anything this server ever gets to say.
       console.error('Could not read the battle engine response body:', err);
-      sendJson(res, 502, {
+      sendFailure(res, {
         error: 'The battle engine response could not be read.',
         detail: describeError(err),
       });
@@ -382,9 +382,9 @@ function handlePartyLookup(req, res) {
 
     if (!partyResponse.ok) {
       console.error('Battle engine rejected the party lookup:', partyResponse.status, rawBody);
-      sendJson(res, 502, {
+      sendFailure(res, {
         error: 'The battle engine rejected the party lookup.',
-        status: partyResponse.status,
+        upstreamStatus: partyResponse.status,
         detail: rawBody.slice(0, 200),
       });
       return;
@@ -399,7 +399,7 @@ function handlePartyLookup(req, res) {
       sendJson(res, 200, { party });
     } catch (err) {
       console.error('Could not parse the battle engine response:', err, rawBody.slice(0, 200));
-      sendJson(res, 502, {
+      sendFailure(res, {
         error: 'The battle engine returned something unreadable.',
         detail: describeError(err),
       });
@@ -450,6 +450,13 @@ async function handleDiagnostics(res) {
       configured: true,
       baseUrlValid: false,
       note: 'GREEN_API_BASE_URL is not a valid URL -- it needs a scheme, e.g. https://host',
+      // JSON-stringified on purpose: the value LOOKS right when read
+      // aloud, so whatever breaks it is something that doesn't show up
+      // in plain text -- a stray quote, a trailing newline, a space.
+      // Escaping makes those visible instead of invisible. It's a public
+      // hostname, not a credential; the token is never reported here.
+      rawBaseUrl: JSON.stringify(process.env.GREEN_API_BASE_URL),
+      rawBaseUrlLength: (process.env.GREEN_API_BASE_URL || '').length,
       serverBoot: SERVER_BOOT,
       recentRequests,
     });
@@ -501,6 +508,25 @@ async function probe(url, headers) {
 function sendJson(res, status, body) {
   res.writeHead(status, { 'Content-Type': 'application/json' });
   res.end(JSON.stringify(body));
+}
+
+/**
+ * Failures go out as 200 with an error payload, deliberately.
+ *
+ * Discord's Activity proxy replaces the BODY of a 5xx response with its
+ * own Cloudflare error page. This server spent five rounds of debugging
+ * writing increasingly precise 502s that the page never saw -- what
+ * arrived was 8KB of "502: Bad gateway" HTML every time, which is also
+ * why the failure looked like a hang or a crash rather than this
+ * server's own considered answer.
+ *
+ * A 200 carrying {ok: false} is not how a public API should report
+ * failure, and it would be wrong in a service that had other consumers.
+ * Here there is exactly one caller, it reads the body, and the body
+ * getting through is the entire point.
+ */
+function sendFailure(res, body) {
+  sendJson(res, 200, { ok: false, ...body });
 }
 
 /**

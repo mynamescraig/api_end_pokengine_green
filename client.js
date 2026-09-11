@@ -4,7 +4,7 @@ import { DiscordSDK } from '@discord/embedded-app-sdk';
 // reached the client. Printed on the page, so a stale cached bundle is
 // immediately obvious instead of being indistinguishable from a bug --
 // the Activity is tested on mobile, where there are no devtools to check.
-const BUILD_MARKER = 'party-v4';
+const BUILD_MARKER = 'party-v5';
 
 const statusEl = document.getElementById('status');
 const partyEl = document.getElementById('party');
@@ -84,7 +84,22 @@ async function main() {
     throw new Error(`Party lookup failed: ${partyResponse.status} ${raw}`);
   }
 
-  const { party } = JSON.parse(raw);
+  // The server reports its own failures as 200 with {ok: false} -- see
+  // sendFailure in server.js for why a 5xx would lose the message
+  // entirely on the way through Discord's proxy.
+  const payload = JSON.parse(raw);
+  if (payload.ok === false) {
+    const parts = [payload.error];
+    if (payload.upstreamStatus) {
+      parts.push(`engine status ${payload.upstreamStatus}`);
+    }
+    if (payload.detail) {
+      parts.push(payload.detail);
+    }
+    throw new Error(parts.join(' :: '));
+  }
+
+  const { party } = payload;
   log(`party members: ${Array.isArray(party) ? party.length : 'not an array'}`);
   renderParty(party);
 }
