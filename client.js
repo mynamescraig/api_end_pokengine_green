@@ -4,7 +4,7 @@ import { DiscordSDK } from '@discord/embedded-app-sdk';
 // reached the client. Printed on the page, so a stale cached bundle is
 // immediately obvious instead of being indistinguishable from a bug --
 // the Activity is tested on mobile, where there are no devtools to check.
-const BUILD_MARKER = 'pc-v4';
+const BUILD_MARKER = 'pc-v5';
 
 const statusEl = document.getElementById('status');
 const partyEl = document.getElementById('party');
@@ -49,11 +49,24 @@ async function loadCustomFont() {
   }
   try {
     const response = await fetch('/assets/pokemon-ds.otf');
+    // "Invalid font data" from FontFace.load() only says the bytes it got
+    // weren't a font -- not what they actually were (an error page routed
+    // through Discord's proxy? a truncated body? the right bytes, just
+    // rejected for some other reason?). Logging what actually arrived
+    // beats guessing a fourth time.
+    log(
+      `font fetch: HTTP ${response.status}, content-type ${response.headers.get('content-type')}, ` +
+        `content-length header ${response.headers.get('content-length')}`
+    );
     if (!response.ok) {
       log(`custom font fetch failed: HTTP ${response.status}`, true);
       return;
     }
     const bytes = await response.arrayBuffer();
+    const head = Array.from(new Uint8Array(bytes.slice(0, 16)))
+      .map((b) => b.toString(16).padStart(2, '0'))
+      .join(' ');
+    log(`font bytes: ${bytes.byteLength} total, first 16 bytes: ${head}`);
     const fontFace = new FontFace('Pokemon DS', bytes);
     await fontFace.load();
     document.fonts.add(fontFace);
