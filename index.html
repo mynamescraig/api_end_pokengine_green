@@ -80,6 +80,12 @@
       .pc-cell.empty {
         background: #232428;
       }
+      .pc-cell.filled {
+        cursor: pointer;
+      }
+      .pc-cell.filled:active {
+        background: #35373c;
+      }
       .pc-cell img {
         width: 100%;
         height: 100%;
@@ -100,6 +106,108 @@
         left: 4px;
         font-size: 9px;
         color: #b5bac1;
+      }
+      /* A full-screen overlay rather than an inline expansion: a phone
+         screen is narrow enough that a card next to a 6-wide grid would
+         either be too cramped to read or push the grid off to one side.
+         Fixed positioning also means opening it can't itself change the
+         page's scroll position, which a layout change in the flow would. */
+      #summary-overlay {
+        position: fixed;
+        inset: 0;
+        background: rgba(0, 0, 0, 0.6);
+        display: flex;
+        align-items: flex-end;
+        z-index: 10;
+      }
+      #summary-card {
+        background: #2b2d31;
+        border-radius: 12px 12px 0 0;
+        padding: 16px;
+        width: 100%;
+        max-height: 80vh;
+        overflow-y: auto;
+        box-sizing: border-box;
+      }
+      .summary-head {
+        display: flex;
+        align-items: center;
+        gap: 12px;
+        margin-bottom: 12px;
+      }
+      .summary-head img {
+        width: 56px;
+        height: 56px;
+        object-fit: contain;
+        image-rendering: pixelated;
+        flex-shrink: 0;
+      }
+      .summary-name {
+        font-size: 18px;
+        font-weight: 600;
+      }
+      .summary-sub {
+        font-size: 12px;
+        color: #b5bac1;
+      }
+      .summary-close {
+        margin-left: auto;
+        background: none;
+        border: none;
+        color: #b5bac1;
+        font-size: 22px;
+        line-height: 1;
+        padding: 4px 8px;
+        cursor: pointer;
+      }
+      .summary-section {
+        margin-bottom: 14px;
+      }
+      .summary-section h3 {
+        font-size: 11px;
+        text-transform: uppercase;
+        letter-spacing: 0.04em;
+        color: #b5bac1;
+        margin: 0 0 6px;
+      }
+      .summary-hpbar {
+        height: 6px;
+        border-radius: 3px;
+        background: #1e1f22;
+        overflow: hidden;
+        margin-bottom: 4px;
+      }
+      .summary-hpbar-fill {
+        height: 100%;
+        background: #3ba55c;
+      }
+      .summary-row {
+        display: flex;
+        justify-content: space-between;
+        font-size: 13px;
+        padding: 3px 0;
+        border-bottom: 1px solid #35373c;
+      }
+      .summary-row span:first-child {
+        color: #b5bac1;
+      }
+      .summary-moves {
+        display: grid;
+        grid-template-columns: 1fr 1fr;
+        gap: 6px;
+      }
+      .summary-move {
+        background: #1e1f22;
+        border-radius: 6px;
+        padding: 6px 8px;
+        font-size: 12px;
+      }
+      .summary-move .move-name {
+        font-weight: 600;
+      }
+      .summary-move .move-pp {
+        color: #b5bac1;
+        font-size: 11px;
       }
       #log {
         font-size: 12px;

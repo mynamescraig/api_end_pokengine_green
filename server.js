@@ -493,8 +493,62 @@ async function handlePcLookup(req, res) {
       shiny: Boolean(member.shiny),
       isEgg: Boolean(member.is_egg),
       iconUrl: member.icon_url,
+      // Green's own GET /v1/trainers/{id}/pc already runs
+      // get_instance_detail + _attach_display_detail per member (the
+      // engine needs the full row to compute box_slot placement in the
+      // first place), so this is already-fetched data, not a second
+      // lookup -- summarizePokemon just narrows the field names down to
+      // what a summary card draws, one tap away with no extra request.
+      detail: summarizePokemon(member),
     })),
   });
+}
+
+/**
+ * The subset of Green's per-instance detail a summary card draws,
+ * renamed to the same camelCase the rest of this service's JSON uses.
+ * Kept separate from the grid's own top-level fields (name/species/
+ * level/etc. above) since a cell needs those to draw itself even before
+ * anyone taps it, while this only matters once they do.
+ */
+function summarizePokemon(member) {
+  if (member.is_egg) {
+    // Masked at the engine boundary already -- species 0, no ability,
+    // nature or moves -- so a tapped egg gets its own small card instead
+    // of one full of blanks.
+    return {
+      isEgg: true,
+      hatchProgressBlocks: member.hatch_progress_blocks,
+      hatchRequiredBlocks: member.hatch_required_blocks,
+    };
+  }
+
+  return {
+    isEgg: false,
+    type1: member.type_1,
+    type2: member.type_2,
+    gender: member.gender,
+    nature: member.nature,
+    ability: member.ability,
+    heldItem: member.held_item,
+    ballType: member.ball_type,
+    happiness: member.happiness,
+    currentHp: member.current_hp,
+    maxHp: member.max_hp,
+    statusCondition: member.status_condition,
+    stats: member.stats,
+    xpIntoLevel: member.xp_into_level,
+    xpNeededForLevel: member.xp_needed_for_level,
+    atMaxLevel: Boolean(member.at_max_level),
+    moves: (member.moves || []).map((move) => ({
+      name: move.name,
+      type: move.type,
+      currentPp: move.current_pp,
+      maxPp: move.max_pp,
+    })),
+    originalTrainerName: member.original_trainer_name,
+    originalTrainerPlatform: member.original_trainer_platform,
+  };
 }
 
 /**
