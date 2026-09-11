@@ -21,8 +21,13 @@ const SERVER_BOOT = new Date().toISOString();
 // what the Activity receives is a Cloudflare "502 Bad gateway" naming
 // this host -- with nothing in it about which call stalled or why. These
 // caps mean this server always answers something it chose to say.
-const DISCORD_TIMEOUT_MS = 10_000;
-const ENGINE_TIMEOUT_MS = 15_000;
+// Kept deliberately tight, and that is the point rather than an
+// optimisation: Discord's Activity proxy has its own timeout, and a 502
+// from it arrives with no information at all. Whatever this server has
+// to say about a slow call is only useful if it says it FIRST, so the
+// two caps together stay well under ten seconds.
+const DISCORD_TIMEOUT_MS = 4_000;
+const ENGINE_TIMEOUT_MS = 5_000;
 
 // index.html was updating on deploy while bundle.js stayed frozen on an
 // old build -- the page's CSS was current but its JavaScript wasn't, so
@@ -64,6 +69,10 @@ const server = http.createServer((req, res) => {
   // handler. Answering here costs nothing and removes that explanation.
   if (req.method === 'GET' && (pathname === '/health' || pathname === '/healthz')) {
     return sendJson(res, 200, { status: 'ok', booted: SERVER_BOOT });
+  }
+
+  if (req.method === 'GET' && pathname === '/api/diag') {
+    return handleDiagnostics(res);
   }
 
   if (req.method === 'POST' && pathname === '/api/token') {
@@ -348,6 +357,92 @@ function handlePartyLookup(req, res) {
       });
     }
   });
+}
+
+/**
+ * Can this service reach the battle engine, and is its token accepted?
+ *
+ * A GET with no auth of its own, so it can be opened directly in a
+ * browser -- which is the entire point. Every failure so far has been a
+ * 502 produced by Discord's proxy, which means the answer never came
+ * from this server and nothing it knows ever reached the page. Hitting
+ * this URL directly takes Discord out of the path completely, so what
+ * comes back is this service's own account of the engine.
+ *
+ * The two probes separate things that have been indistinguishable:
+ * /health is unauthenticated and, by the engine's own design, never
+ * touches MySQL -- so it isolates pure network reachability. The party
+ * probe then adds both the bearer token and the database. Reachable but
+ * unauthorized, reachable but slow, and not reachable at all stop
+ * looking alike.
+ *
+ * It reports the engine's host but never its token, and the party probe
+ * asks for trainer 0 -- the engine's reserved "wild" sentinel, which
+ * owns no player's Pokemon -- so proving the token works cannot leak
+ * anyone's data.
+ */
+async function handleDiagnostics(res) {
+  if (!GREEN_API_BASE_URL || !GREEN_API_TOKEN) {
+    sendJson(res, 200, {
+      configured: false,
+      hasBaseUrl: Boolean(GREEN_API_BASE_URL),
+      hasToken: Boolean(GREEN_API_TOKEN),
+    });
+    return;
+  }
+
+  let engineHost;
+  try {
+    const parsed = new URL(GREEN_API_BASE_URL);
+    engineHost = `${parsed.protocol}//${parsed.host}`;
+  } catch {
+    sendJson(res, 200, {
+      configured: true,
+      baseUrlValid: false,
+      note: 'GREEN_API_BASE_URL is not a valid URL -- it needs a scheme, e.g. https://host',
+    });
+    return;
+  }
+
+  const [health, party] = await Promise.all([
+    probe(`${GREEN_API_BASE_URL}/health`, {}),
+    probe(`${GREEN_API_BASE_URL}/v1/trainers/0/party`, {
+      Authorization: `Bearer ${GREEN_API_TOKEN}`,
+    }),
+  ]);
+
+  sendJson(res, 200, {
+    configured: true,
+    baseUrlValid: true,
+    engineHost,
+    serverBoot: SERVER_BOOT,
+    health,
+    party,
+  });
+}
+
+async function probe(url, headers) {
+  const startedAt = Date.now();
+  try {
+    const response = await fetch(url, {
+      headers,
+      signal: AbortSignal.timeout(ENGINE_TIMEOUT_MS),
+    });
+    const body = await response.text();
+    return {
+      reached: true,
+      status: response.status,
+      ms: Date.now() - startedAt,
+      body: body.slice(0, 160),
+    };
+  } catch (err) {
+    return {
+      reached: false,
+      timedOut: Boolean(err && err.name === 'TimeoutError'),
+      ms: Date.now() - startedAt,
+      error: describeError(err),
+    };
+  }
 }
 
 function sendJson(res, status, body) {
