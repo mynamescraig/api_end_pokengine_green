@@ -141,6 +141,10 @@ const server = http.createServer((req, res) => {
   if (req.method === 'GET' && pathname === '/bundle.js') {
     return serveBundle(res);
   }
+  const staticAsset = STATIC_ASSETS[pathname];
+  if (req.method === 'GET' && staticAsset) {
+    return serveStaticAsset(res, staticAsset);
+  }
 
   res.writeHead(404, { 'Content-Type': 'text/plain' });
   res.end('Not found');
@@ -184,6 +188,43 @@ function serveBundle(res) {
       return;
     }
     res.writeHead(200, { 'Content-Type': 'application/javascript', 'Cache-Control': 'no-store' });
+    res.end(contents);
+  });
+}
+
+// Design assets -- committed files that only change when someone commits
+// a new one, unlike index.html/bundle.js which change on every deploy.
+// Cached hard rather than no-store for exactly that reason.
+const STATIC_ASSETS = {
+  '/assets/pokemon-ds.otf': {
+    file: 'assets/font/pkmn_ds/pokemon-ds-font.otf',
+    type: 'font/otf',
+  },
+  '/assets/summary-atlas.png': {
+    // The 48x48 crop, not the 64x64 file as committed: the source has a
+    // 16px transparent margin on its right and bottom edges (a 64x64
+    // canvas holding a 3x3-of-16px, i.e. 48x48, atlas), and CSS
+    // border-image-slice can only cut a rectangle at a fixed distance
+    // from each of the image's TRUE edges -- it has no way to say "skip
+    // 16px of padding, then slice." Slicing the original directly would
+    // pull the right/bottom edge tiles from that empty margin instead of
+    // the real artwork. Cropped once (see assets/pc/summary_atlas_
+    // 9slice.png) rather than at request time, since this never changes
+    // between requests and Node has no image library already in this
+    // project to justify adding one for a one-time 64x64 -> 48x48 crop.
+    file: 'assets/pc/summary_atlas_9slice.png',
+    type: 'image/png',
+  },
+};
+
+function serveStaticAsset(res, { file, type }) {
+  fs.readFile(path.join(__dirname, file), (err, contents) => {
+    if (err) {
+      res.writeHead(404, { 'Content-Type': 'text/plain' });
+      res.end('Not found');
+      return;
+    }
+    res.writeHead(200, { 'Content-Type': type, 'Cache-Control': 'public, max-age=604800, immutable' });
     res.end(contents);
   });
 }

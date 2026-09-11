@@ -5,6 +5,21 @@
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <title>Activity POC</title>
     <style>
+      /* CC0 (see assets/font/pkmn_ds/license.txt) -- free to use with no
+         attribution required, kept in the repo anyway since it travels
+         with the font file by the FontStruct author's own request. */
+      @font-face {
+        font-family: "Pokemon DS";
+        src: url("/assets/pokemon-ds.otf") format("opentype");
+        font-display: swap;
+      }
+      /* Themed, not applied everywhere: this is a tile font meant for
+         short labels at a deliberate size, and reads badly as dense
+         paragraph text. Scoped to headings/titles/buttons below; #log
+         (diagnostic output, not player-facing UI) stays on the system
+         font on purpose -- legible debug text matters more there than
+         theming does. */
+
       /* Discord's Activity iframe is dark and our text was defaulting to
          black, which made everything but the big bold h1 effectively
          invisible. Explicit colors, and top padding so the heading isn't
@@ -17,7 +32,9 @@
         font-family: system-ui, -apple-system, sans-serif;
       }
       h1 {
-        font-size: 20px;
+        font-family: "Pokemon DS", system-ui, -apple-system, sans-serif;
+        font-size: 22px;
+        letter-spacing: 0.02em;
         margin: 0 0 12px;
       }
       #party {
@@ -42,8 +59,8 @@
         margin-bottom: 10px;
       }
       .pc-title {
-        font-size: 16px;
-        font-weight: 600;
+        font-family: "Pokemon DS", system-ui, -apple-system, sans-serif;
+        font-size: 18px;
       }
       .pc-count {
         font-size: 12px;
@@ -111,23 +128,55 @@
          screen is narrow enough that a card next to a 6-wide grid would
          either be too cramped to read or push the grid off to one side.
          Fixed positioning also means opening it can't itself change the
-         page's scroll position, which a layout change in the flow would. */
+         page's scroll position, which a layout change in the flow would.
+
+         Centered rather than the bottom sheet this started as: the border
+         atlas is a complete framed dialogue box, all four corners
+         rounded, meant to be seen whole -- a bottom sheet would flatten
+         its bottom edge off-screen and use only 2 of its 3 border tiles.
+         A floating box is also just the more natural home for game-style
+         dialogue art in the first place. */
       #summary-overlay {
         position: fixed;
         inset: 0;
         background: rgba(0, 0, 0, 0.6);
         display: flex;
-        align-items: flex-end;
+        align-items: center;
+        justify-content: center;
+        padding: 16px;
+        box-sizing: border-box;
         z-index: 10;
       }
       #summary-card {
-        background: #2b2d31;
-        border-radius: 12px 12px 0 0;
-        padding: 16px;
         width: 100%;
+        max-width: 360px;
         max-height: 80vh;
         overflow-y: auto;
         box-sizing: border-box;
+        padding: 16px;
+        /* border-radius has no effect on border-image (the two don't
+           compose in any browser) -- the rounding here is baked into the
+           art's own corner tiles, not a CSS property. */
+        border-style: solid;
+        border-width: 24px;
+        border-image-source: url("/assets/summary-atlas.png");
+        /* 16: the real tile size in the (pre-cropped, see server.js's
+           STATIC_ASSETS) 48x48 source -- a 3x3 grid of 16px squares, so
+           one slice value cuts all four the same way. fill: the 9th,
+           center tile (a subtle dot-grid) becomes the card's actual
+           background instead of empty space showing whatever is behind
+           the border. */
+        border-image-slice: 16 fill;
+        border-image-width: 24px;
+        /* round rather than the stretch default: stretch would smear the
+           dot-grid fill and the straight edge tiles into blur trying to
+           cover a height CSS doesn't know ahead of time (the card's
+           height depends on which Pokemon is open). round rescales to
+           fit a whole number of tiles instead of stretching a fraction of
+           one, so the pattern repeats cleanly regardless of content
+           length. */
+        border-image-repeat: round;
+        image-rendering: pixelated;
       }
       .summary-head {
         display: flex;
@@ -143,8 +192,8 @@
         flex-shrink: 0;
       }
       .summary-name {
-        font-size: 18px;
-        font-weight: 600;
+        font-family: "Pokemon DS", system-ui, -apple-system, sans-serif;
+        font-size: 20px;
       }
       .summary-sub {
         font-size: 12px;
@@ -164,7 +213,8 @@
         margin-bottom: 14px;
       }
       .summary-section h3 {
-        font-size: 11px;
+        font-family: "Pokemon DS", system-ui, -apple-system, sans-serif;
+        font-size: 13px;
         text-transform: uppercase;
         letter-spacing: 0.04em;
         color: #b5bac1;
