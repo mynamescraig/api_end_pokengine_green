@@ -51,7 +51,46 @@ const BUNDLE_VERSION = (() => {
   }
 })();
 
+// A short in-memory history of what this server actually handled, so the
+// question "did the request even get here?" can be answered from a
+// browser instead of from logs. Every failure so far has been a 502
+// written by Discord's proxy, which says nothing about whether this
+// process ever saw the request -- and that is the difference between a
+// bug in this code and a problem in front of it.
+//
+// `aborted` is the interesting one: it means the caller hung up before
+// this server finished responding, which is exactly the fingerprint of
+// the proxy giving up on us.
+const RECENT_REQUEST_LIMIT = 25;
+const recentRequests = [];
+
+function recordRequest(entry) {
+  recentRequests.push(entry);
+  if (recentRequests.length > RECENT_REQUEST_LIMIT) {
+    recentRequests.shift();
+  }
+}
+
 const server = http.createServer((req, res) => {
+  const startedAt = Date.now();
+  let settled = false;
+  const finish = (aborted) => {
+    if (settled) {
+      return;
+    }
+    settled = true;
+    recordRequest({
+      at: new Date(startedAt).toISOString(),
+      method: req.method,
+      path: new URL(req.url, 'http://localhost').pathname,
+      status: aborted ? null : res.statusCode,
+      ms: Date.now() - startedAt,
+      ...(aborted ? { aborted: true } : {}),
+    });
+  };
+  res.on('finish', () => finish(false));
+  res.on('close', () => finish(!res.writableEnded));
+
   // Discord's proxy appends launch params to the URL (e.g.
   // "/?instance_id=...&channel_id=...&guild_id=...&frame_id=...&platform=desktop"),
   // so we compare against the pathname only, not the raw req.url, or every
@@ -387,6 +426,8 @@ async function handleDiagnostics(res) {
       configured: false,
       hasBaseUrl: Boolean(GREEN_API_BASE_URL),
       hasToken: Boolean(GREEN_API_TOKEN),
+      serverBoot: SERVER_BOOT,
+      recentRequests,
     });
     return;
   }
@@ -400,6 +441,8 @@ async function handleDiagnostics(res) {
       configured: true,
       baseUrlValid: false,
       note: 'GREEN_API_BASE_URL is not a valid URL -- it needs a scheme, e.g. https://host',
+      serverBoot: SERVER_BOOT,
+      recentRequests,
     });
     return;
   }
@@ -418,6 +461,7 @@ async function handleDiagnostics(res) {
     serverBoot: SERVER_BOOT,
     health,
     party,
+    recentRequests,
   });
 }
 
