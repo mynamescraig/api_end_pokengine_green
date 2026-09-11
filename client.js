@@ -4,7 +4,7 @@ import { DiscordSDK } from '@discord/embedded-app-sdk';
 // reached the client. Printed on the page, so a stale cached bundle is
 // immediately obvious instead of being indistinguishable from a bug --
 // the Activity is tested on mobile, where there are no devtools to check.
-const BUILD_MARKER = 'party-v3';
+const BUILD_MARKER = 'party-v4';
 
 const statusEl = document.getElementById('status');
 const partyEl = document.getElementById('party');
@@ -104,8 +104,35 @@ function renderParty(party) {
   }
 }
 
+/**
+ * On failure, pull /api/diag and put it on the page.
+ *
+ * The failing request keeps coming back as a 502 written by Discord's
+ * proxy, which says nothing about what the server saw -- /api/diag is
+ * where that lives. Fetching it from here rather than asking someone to
+ * open a second URL keeps the whole picture on the one screen being
+ * looked at, which matters when the only way to read any of this is a
+ * phone screenshot. It is also a much cheaper request (two probes in
+ * parallel, capped at 5s) than the one that failed, so it stands a
+ * better chance of finishing inside whatever patience the proxy has.
+ */
+async function showDiagnostics() {
+  log('--- fetching /api/diag ---');
+  try {
+    const response = await fetch('/api/diag');
+    const raw = await response.text();
+    log(`diag ${response.status}: ${raw.slice(0, 1200)}`);
+  } catch (err) {
+    log(`diag unavailable: ${err && err.message ? err.message : err}`, true);
+  }
+}
+
 main().catch((err) => {
   console.error('Discord Activity flow failed:', err);
   statusEl.textContent = 'Something went wrong';
-  log(`FAILED: ${err && err.message ? err.message : err}`, true);
+  // Truncated: a Cloudflare error page is ~8KB of HTML, and letting it
+  // fill the screen buries the diagnostics printed right after it.
+  const message = err && err.message ? err.message : String(err);
+  log(`FAILED: ${message.slice(0, 300)}`, true);
+  showDiagnostics();
 });
